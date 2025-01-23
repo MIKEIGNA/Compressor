@@ -89,3 +89,5 @@ compress_video_with_preprocessing(
     codec="libx265",
     crf=28  # Higher CRF for better compression
 )
+
+print('done with compress_video_with_preprocessing')
