@@ -1,113 +1,71 @@
-import os
-import cv2
-import numpy as np
 import subprocess
-from tqdm import tqdm
-import sys
+import os
 
-def frames_are_duplicate(frame_a, frame_b, threshold=2.0):
+def compress_video_simple(
+    input_video: str,
+    output_video: str,
+    codec: str = "libx264",
+    crf: int = 20,
+    preset: str = "medium",
+    extra_ffmpeg_flags: list = None
+):
     """
-    Determine if frame_a is near-duplicate of frame_b by measuring mean absolute difference.
-    """
-    if frame_b is None:
-        return False
-    diff = np.mean(np.abs(frame_a.astype(np.float32) - frame_b.astype(np.float32)))
-    return diff < threshold
-
-def compress_video_lossless_in_memory(input_video,
-                                      output_video,
-                                      skip_duplicates=True,
-                                      difference_threshold=2.0,
-                                      codec="libx264",
-                                      ffmpeg_codec_flags=("-qp", "0")):
-    """
-    Compress a video in a truly lossless manner, skipping near-duplicate frames,
-    all in-memory without writing temp frames.
+    Compress a video in a single pass using FFmpeg, minimal overhead, suitable for low-end PCs.
 
     Args:
-        input_video (str): Path to the input video.
-        output_video (str): Path to the output compressed video.
-        skip_duplicates (bool): If True, skip frames that appear nearly identical to the previous one.
-        difference_threshold (float): Threshold for deciding duplicates (lower => less skipping).
-        codec (str): FFmpeg codec to use in a truly lossless mode (e.g. 'libx264').
-        ffmpeg_codec_flags (tuple): Extra flags for the codec (e.g., '-qp', '0') for H.264 lossless.
+        input_video (str): Path to the input video file.
+        output_video (str): Path to the output compressed video file.
+        codec (str): FFmpeg codec (e.g., 'libx264' for H.264, 'libx265' for H.265).
+        crf (int): Constant Rate Factor [0-51], lower => better quality + bigger size.
+        preset (str): Speed/quality trade-off. e.g., 'ultrafast', 'fast', 'medium', 'slow'.
+        extra_ffmpeg_flags (list): Additional arguments to pass to FFmpeg if needed (e.g. ['-pix_fmt','yuv420p']).
 
     Returns:
         None
     """
-    cap = cv2.VideoCapture(input_video)
-    if not cap.isOpened():
-        raise FileNotFoundError(f"Could not open video: {input_video}")
+    if not os.path.isfile(input_video):
+        raise FileNotFoundError(f"Input video not found: {input_video}")
 
-    fps = cap.get(cv2.CAP_PROP_FPS)
-    frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-
-    print(f"Opened video: {input_video}")
-    print(f" - Detected {frame_count} frames at {fps:.2f} FPS.")
-    print("Start reading frames and piping to FFmpeg...")
-
-    # Build FFmpeg command for reading images from pipe
-    # -f image2pipe => read images from STDIN
-    # -c:v {codec}, plus extra flags => ensure lossless
+    # Basic FFmpeg command:
+    #   ffmpeg -i input_video -c:v codec -preset preset -crf crf output_video
     ffmpeg_cmd = [
         "ffmpeg",
-        "-y",                # overwrite
-        "-f", "image2pipe",  # read image sequence from pipe
-        "-framerate", str(int(fps)),
-        "-i", "pipe:0",      # input from stdin
+        "-y",  # Overwrite output
+        "-i", input_video,
         "-c:v", codec,
-        "-preset", "medium", # or "slow" for potentially smaller file
+        "-preset", preset,
+        "-crf", str(crf),
     ]
-    ffmpeg_cmd.extend(list(ffmpeg_codec_flags))
+
+    if extra_ffmpeg_flags:
+        ffmpeg_cmd.extend(extra_ffmpeg_flags)
+
     ffmpeg_cmd.append(output_video)
 
-    # Start FFmpeg process
-    ffmpeg_process = subprocess.Popen(ffmpeg_cmd, stdin=subprocess.PIPE)
+    print("Running FFmpeg command:")
+    print(" ".join(ffmpeg_cmd))
 
-    prev_frame = None
-    used_frames = 0
-
-    # We read frames and pass them to ffmpeg via pipe
-    # Encoding each frame as PNG in-memory for truly lossless transfer
-    for i in tqdm(range(frame_count), desc="Processing"):
-        ret, frame = cap.read()
-        if not ret:
-            break
-
-        if skip_duplicates and frames_are_duplicate(frame, prev_frame, threshold=difference_threshold):
-            continue
-
-        # Convert BGR -> PNG in memory
-        ret2, png_data = cv2.imencode(".png", frame)
-        if not ret2:
-            print(f"Warning: Could not encode frame {i} as PNG.")
-            continue
-
-        # Write PNG bytes to ffmpeg STDIN
-        ffmpeg_process.stdin.write(png_data.tobytes())
-        prev_frame = frame
-        used_frames += 1
-
-    cap.release()
-
-    # Finally, close STDIN => signals FFmpeg no more frames
-    ffmpeg_process.stdin.close()
-    ffmpeg_process.wait()
-
-    print(f"Lossless compression done. {used_frames} frames used. Output => {output_video}")
+    subprocess.run(ffmpeg_cmd, check=True)
+    print(f"Compression complete. Output saved as {output_video}")
 
 # Example usage
 if __name__ == "__main__":
-    input_video_path = "sample_video.mp4"   # Input
-    output_video_path = "output_lossless.mp4"
+    # Adjust these paths as needed
+    input_video_path = "sample_video.mp4"
+    output_video_path = "compressed_output.mp4"
 
-    compress_video_lossless_in_memory(
+    # For near-lossless H.264 on a low-end PC:
+    # - Use a moderate CRF (18-24 is typical for near transparency)
+    # - Use a faster preset if your CPU is very limited (e.g. 'fast' or 'ultrafast')
+
+    compress_video_simple(
         input_video=input_video_path,
         output_video=output_video_path,
-        skip_duplicates=True,         # skip near-identical frames
-        difference_threshold=2.0,     # tune as needed
-        codec="libx264",              # or 'libx265'
-        ffmpeg_codec_flags=("-qp","0")# for true lossless in H.264
+        codec="libx264",
+        crf=20,          # Good balance of quality & size (approx 50% reduction typical)
+        preset="medium", # For slower PCs, pick "fast" or "ultrafast"
+        extra_ffmpeg_flags=None
+        # e.g. extra_ffmpeg_flags=["-pix_fmt", "yuv420p"]
     )
 
-    print("All done.")
+    print("All done!")
